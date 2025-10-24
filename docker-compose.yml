@@ -1,95 +1,132 @@
-# version is now using "compose spec"
-# v2 and v3 are now combined!
-# docker-compose v1.27+ required
+# Authentication Microservices Application
+# Full-stack microservices with React frontend, Node.js backend, and PostgreSQL database
 
 services:
-  vote:
+  # Frontend Service - React Application
+  frontend:
     build: 
-      context: ./vote
-      target: dev
+      context: ./frontend
     depends_on:
+      - backend
+      - auth-service
+    ports:
+      - "3000:80"
+    environment:
+      - REACT_APP_API_URL=http://localhost:3001
+      - REACT_APP_AUTH_URL=http://localhost:3002
+    networks:
+      - front-tier
+      - back-tier
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  # Backend Service - Node.js/Express API
+  backend:
+    build: 
+      context: ./backend
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - "3001:3001"
+    environment:
+      - NODE_ENV=production
+      - PORT=3001
+      - DB_HOST=db
+      - DB_PORT=5432
+      - DB_NAME=postgres
+      - DB_USER=postgres
+      - DB_PASSWORD=postgres
+      - JWT_SECRET=your-super-secret-jwt-key-change-this-in-production
+      - FRONTEND_URL=http://localhost:3000
+    networks:
+      - front-tier
+      - back-tier
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('http').get('http://localhost:3001/health', (res) => { process.exit(res.statusCode === 200 ? 0 : 1) })"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  # Authentication Service - Dedicated JWT-based auth service
+  auth-service:
+    build: 
+      context: ./auth-service
+    depends_on:
+      db:
+        condition: service_healthy
       redis:
         condition: service_healthy
-    healthcheck: 
-      test: ["CMD", "curl", "-f", "http://localhost"]
-      interval: 15s
-      timeout: 5s
-      retries: 3
-      start_period: 10s
-    volumes:
-     - ./vote:/usr/local/app
     ports:
-      - "8080:80"
+      - "3002:3002"
+    environment:
+      - NODE_ENV=production
+      - PORT=3002
+      - DB_HOST=db
+      - DB_PORT=5432
+      - DB_NAME=postgres
+      - DB_USER=postgres
+      - DB_PASSWORD=postgres
+      - JWT_SECRET=your-super-secret-jwt-key-change-this-in-production
+      - REDIS_URL=redis://redis:6379
+      - FRONTEND_URL=http://localhost:3000
     networks:
       - front-tier
       - back-tier
-
-  result:
-    build: ./result
-    # use nodemon rather than node for local dev
-    entrypoint: nodemon --inspect=0.0.0.0 server.js
-    depends_on:
-      db:
-        condition: service_healthy 
-    volumes:
-      - ./result:/usr/local/app
-    ports:
-      - "8081:80"
-      - "127.0.0.1:9229:9229"
-    networks:
-      - front-tier
-      - back-tier
-
-  worker:
-    build:
-      context: ./worker
-    depends_on:
-      redis:
-        condition: service_healthy 
-      db:
-        condition: service_healthy 
-    networks:
-      - back-tier
-
-  redis:
-    image: redis:alpine
-    volumes:
-      - "./healthchecks:/healthchecks"
     healthcheck:
-      test: /healthchecks/redis.sh
-      interval: "5s"
-    networks:
-      - back-tier
+      test: ["CMD", "node", "-e", "require('http').get('http://localhost:3002/health', (res) => { process.exit(res.statusCode === 200 ? 0 : 1) })"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
 
+  # Database Service - PostgreSQL
   db:
     image: postgres:15-alpine
     environment:
       POSTGRES_USER: "postgres"
       POSTGRES_PASSWORD: "postgres"
+      POSTGRES_DB: "postgres"
     volumes:
       - "db-data:/var/lib/postgresql/data"
+      - "./database/init.sql:/docker-entrypoint-initdb.d/init.sql"
       - "./healthchecks:/healthchecks"
+    ports:
+      - "5432:5432"
     healthcheck:
       test: /healthchecks/postgres.sh
-      interval: "5s"
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
     networks:
       - back-tier
 
-  # this service runs once to seed the database with votes
-  # it won't run unless you specify the "seed" profile
-  # docker compose --profile seed up -d
-  seed:
-    build: ./seed-data
-    profiles: ["seed"]
-    depends_on:
-      vote:
-        condition: service_healthy 
+  # Redis Service - For session management and caching
+  redis:
+    image: redis:7-alpine
+    volumes:
+      - "redis-data:/data"
+      - "./healthchecks:/healthchecks"
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: /healthchecks/redis.sh
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
     networks:
-      - front-tier
-    restart: "no"
+      - back-tier
 
 volumes:
   db-data:
+  redis-data:
 
 networks:
   front-tier:
